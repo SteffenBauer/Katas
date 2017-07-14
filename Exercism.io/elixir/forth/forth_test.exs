@@ -4,10 +4,20 @@ else
   Code.load_file("forth.exs")
 end
 
-ExUnit.start [trace: true, seed: 0]
+ExUnit.start [trace: true]
 
 defmodule ForthTest do
   use ExUnit.Case
+
+  doctest Forth
+
+  test "ignores comments at evaluation" do
+    s = Forth.new() |> Forth.eval("\ hello comment") |> format_stack
+    assert s == ""
+
+    s1 = Forth.new() |> Forth.eval("1 2 3 \ push one thru three on the stack\r\n")
+    assert s2 == "1 2 3"
+  end
 
   test "no input, no stack" do
     s = Forth.new |> Forth.format_stack
@@ -124,7 +134,7 @@ defmodule ForthTest do
         |> Forth.format_stack
     assert s == "1 1 1"
   end
-  
+
   test "redefining an existing built-in word" do
     s = Forth.new
         |> Forth.eval(": swap dup ;")
@@ -139,7 +149,7 @@ defmodule ForthTest do
         |> Forth.format_stack
     assert s == "220371"
   end
-  
+
   test "defining a number" do
     assert_raise Forth.InvalidWord, fn ->
       Forth.new |> Forth.eval(": 1 2 ;")
