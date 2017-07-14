@@ -1,168 +1,202 @@
 defmodule Forth do
-  @derive [Access]
-  defstruct stack: [], words: %{}, wordparse: false, currentword: nil, currentdef: []
+  @moduledoc "Forth Interpreter"
 
-  def new(), do: %Forth{}
+  defmodule EV do
+    @moduledoc "Interpreter EV."
 
-  def eval(ev, s) do
-    Regex.split(~r/[^\p{L}\p{N}\p{S}\p{P}]+/u, s)
+    defstruct [
+      stack: [],
+      words: %{},
+      wordparse: false,
+      currentword: nil,
+      currentdef: []
+    ]
+
+    @typedoc "Stack list."
+    @type stack ::     [any]
+
+    @typedoc "Word map."
+    @type words ::      map
+
+    @typedoc "Forth Word"
+    @type word :: any
+
+    @typedoc "Wordparse flag."
+    @type wordparse ::  boolean
+
+    @typedoc "Current definition."
+    @type currentdef :: [any]
+
+    @typedoc "EV"
+    @type t :: %__MODULE__{
+      stack:       stack,
+      words:       words,
+      wordparse:   wordparse,
+      currentword: word,
+      currentdef:  currentdef
+    }
+
+    @doc ~S"""
+    Returns new EV struct.
+
+    ## Examples
+
+      iex> Forth.new()
+      %EV{stack: [], words: %{}, wordparse: false, currentword: nil, currentdef: []}
+
+    """
+    @spec new() :: t
+    def new(), do: %EV{}
+  end
+
+  @typedoc "Binary forth token."
+  @type token :: binary
+
+  @doc false
+  defdelegate new(), to: EV
+
+  @doc """
+  Evaluate a forth string.
+  """
+  @spec eval(EV.t, binary) :: EV.t
+  def eval(%EV{} = ev, s) when is_binary(s) do
+    ~r/[^\p{L}\p{N}\p{S}\p{P}]+/u
+    |> Regex.split(s)
+    |> Enum.map(&String.upcase/1)
     |> Enum.reduce(ev, &parse_forth/2)
   end
 
-  defp parse_forth(token, ev) do
-    case ev[:wordparse] do
-      true  -> parse_definition(token, ev)
-      false -> parse_regular(token, ev)
-    end
+  @doc ~S"""
+  Format a stack for output and consumption.
+
+  ## Examples
+
+    iex(1)> stack = Forth.new()
+    iex(2)> Forth.format_stack(stack)
+    ""
+
+    iex(1)> stack = Forth.new() |> Map.put(:stack, ["a", "b", "c"])
+    iex(2)> Forth.format_stack(stack)
+    "c b a"
+  """
+  def format_stack(%EV{stack: stack}) do
+    stack
+    |> Enum.reverse()
+    |> Enum.join(" ")
   end
 
-#
-#  Parser for new word definition
-#
-  defp parse_definition(token, ev) do
-    token = String.upcase(token)
-    case ev[:currentword] do
-      nil -> parse_newword(token, ev)
-      _   -> parse_newdefinition(token, ev)
-    end
-  end
+  @spec parse_forth(token, EV.t) :: EV.t
+  defp parse_forth("\\" <> _, %EV{} = ev), do: ev
+  defp parse_forth(token, %EV{wordparse: true} = ev), do: parse_definition(token, ev)
+  defp parse_forth(token, %EV{} = ev), do: parse_regular(token, ev)
 
-  defp parse_newword(token, ev) do
+  # Parses a definition.
+  @spec parse_definition(token, EV.t) :: EV.t
+  defp parse_definition(token, %EV{currentword: nil} = ev), do: parse_newword(token, ev)
+  defp parse_definition(token, %EV{} = ev), do: parse_newdefinition(token, ev)
+
+  @spec parse_newword(token, EV.t) :: EV.t | no_return
+  defp parse_newword(token, %EV{} = ev) do
     cond do
       is_num?(token) -> raise Forth.InvalidWord
-      true           -> %Forth{ ev | :currentword => token }
+      true           -> %EV{ ev | currentword: token }
     end
   end
 
-  defp parse_newdefinition(token, ev) do
-    cond do
-      token == ";"    -> end_worddefinition(ev)
-      true            -> %Forth{ ev | :currentdef => [token | ev[:currentdef]] }
-    end
+  defp parse_newdefinition(";",   %EV{} = ev), do: end_worddefinition(ev)
+  defp parse_newdefinition(token, %EV{} = ev), do: %EV{ ev | currentdef: [token | ev.currentdef] }
+
+  defp start_worddefinition(%EV{} = ev), do: %EV{ ev | wordparse:   true,
+                                                       currentword: nil,
+                                                       currentdef:  [] }
+  defp end_worddefinition(%EV{} = ev) do
+    newwords = Map.put ev.words, ev.currentword, Enum.reverse(ev.currentdef)
+    %EV{ ev | :words       => newwords,
+              :wordparse   => false,
+              :currentword => nil,
+              :currentdef  => [] }
   end
 
-  defp start_worddefinition(ev), do: %Forth{ ev | :wordparse => true, 
-                                                  :currentword => nil, 
-                                                  :currentdef => [] }
-  defp end_worddefinition(ev) do
-    newwords = Map.put ev[:words], ev[:currentword], Enum.reverse(ev[:currentdef])
-    %Forth{ ev | :words => newwords,
-                 :wordparse => false, 
-                 :currentword => nil, 
-                 :currentdef => [] }
+  defp do_worddefinition(token, %EV{} = ev) do
+    ev.words[token] |> Enum.reduce(ev, &parse_regular/2)
   end
 
-  defp do_worddefinition(token, ev) do
-    ev[:words][token] |> Enum.reduce(ev, &parse_regular/2)
-  end
+  # Regular parser.
 
-#
-#  Parser for regular tokens
-#
-  defp parse_regular(token, ev) do
-    token = String.upcase(token)
+  @spec parse_regular(token, EV.t) :: EV.t | no_return
+  defp parse_regular(token, %EV{} = ev) do
     cond do
       is_word?(token, ev) -> do_worddefinition(token, ev)
-      token == ":"        -> start_worddefinition(ev)
       is_num?(token)      -> add_number(String.to_integer(token), ev)
-      token == "+"        -> do_addition(ev)
-      token == "-"        -> do_subtraction(ev)
-      token == "*"        -> do_multiplication(ev)
-      token == "/"        -> do_division(ev)
-      token == "DUP"      -> do_dup(ev)
-      token == "DROP"     -> do_drop(ev)
-      token == "SWAP"     -> do_swap(ev)
-      token == "OVER"     -> do_over(ev)
-      true                -> raise Forth.UnknownWord, token
+      is_binary(token)    -> do_parse_regular(token, ev)
     end
   end
 
-  defp is_word?(token, ev), do: Map.has_key?(ev[:words], token)
+  defp do_parse_regular(":"   , %EV{} = ev), do:  start_worddefinition(ev)
+  defp do_parse_regular("+"   , %EV{} = ev), do:  do_addition(ev)
+  defp do_parse_regular("-"   , %EV{} = ev), do:  do_subtraction(ev)
+  defp do_parse_regular("*"   , %EV{} = ev), do:  do_multiplication(ev)
+  defp do_parse_regular("/"   , %EV{} = ev), do:  do_division(ev)
+  defp do_parse_regular("DUP" , %EV{} = ev), do:  do_dup(ev)
+  defp do_parse_regular("DROP", %EV{} = ev), do:  do_drop(ev)
+  defp do_parse_regular("SWAP", %EV{} = ev), do:  do_swap(ev)
+  defp do_parse_regular("OVER", %EV{} = ev), do:  do_over(ev)
+  defp do_parse_regular(token , _), do: raise Forth.UnknownWord, token
+
+  defp is_word?(token, %EV{words: words}), do: words[token] != nil
   defp is_num?(token), do: Integer.parse(token) != :error
 
-  defp add_number(num, ev), do: %Forth { ev | :stack => [num|ev[:stack]] }
+  defp add_number(num, ev), do: %EV { ev | :stack => [num|ev.stack] }
 
-  defp do_addition(ev)do
-    case ev[:stack] do
-      [h1,h2|t] -> %Forth{ ev | :stack => [h2+h1|t] }
-      _         -> raise Forth.StackUnderflow
-    end
-  end
-  
-  defp do_subtraction(ev)do
-    case ev[:stack] do
-      [h1,h2|t] -> %Forth{ ev | :stack => [h2-h1|t] }
-      _         -> raise Forth.StackUnderflow
-    end
-  end
+  defp do_addition(%EV{stack: [h1, h2 | t]} = ev), do: %EV{ev | stack: [h2 + h1| t]}
+  defp do_addition(_), do: raise Forth.StackUnderflow
 
-  defp do_multiplication(ev)do
-    case ev[:stack] do
-      [h1,h2|t] -> %Forth{ ev | :stack => [h2*h1|t] }
-      _         -> raise Forth.StackUnderflow
-    end
-  end
 
-  defp do_division(ev)do
-    case ev[:stack] do
-      [0|_]     -> raise Forth.DivisionByZero
-      [h1,h2|t] -> %Forth{ ev | :stack => [div(h2,h1)|t] }
-      _         -> raise Forth.StackUnderflow
-    end
-  end
+  defp do_subtraction(%EV{stack: [h1, h2 | t]} = ev), do: %EV{ev | stack: [h2 - h1| t]}
+  defp do_subtraction(_), do: raise Forth.StackUnderflow
 
-  defp do_dup(ev)do
-    case ev[:stack] do
-      [h|t] -> %Forth{ ev | :stack => [h,h|t] }
-      _     -> raise Forth.StackUnderflow
-    end
-  end
+  defp do_multiplication(%EV{stack: [h1, h2 | t]} = ev), do: %EV{ev | stack: [h2 * h1| t]}
+  defp do_multiplication(_), do: raise Forth.StackUnderflow
 
-  defp do_drop(ev)do
-    case ev[:stack] do
-      [_|t] -> %Forth{ ev | :stack => t }
-      _     -> raise Forth.StackUnderflow
-    end
-  end
+  defp do_division(%EV{stack: [0 | _]}), do: raise Forth.DivisionByZero
+  defp do_division(%EV{stack: [h1, h2 | t]} = ev), do: %EV{ev | stack: [div(h2, h1)| t]}
+  defp do_division(_), do: raise Forth.StackUnderflow
 
-  defp do_swap(ev)do
-    case ev[:stack] do
-      [h1,h2|t] -> %Forth{ ev | :stack => [h2,h1|t] }
-      _         -> raise Forth.StackUnderflow
-    end
-  end
+  defp do_dup(%EV{stack: [h | t]} = ev), do: %EV{ ev | stack: [h, h | t] }
+  defp do_dup(_), do: raise Forth.StackUnderflow
 
-  defp do_over(ev)do
-    case ev[:stack] do
-      [h1,h2|t] -> %Forth{ ev | :stack => [h2,h1,h2|t] }
-      _         -> raise Forth.StackUnderflow
-    end
-  end
+  defp do_drop(%EV{stack: [_ | t]} = ev), do: %EV{ev | stack: t}
+  defp do_drop(_), do: raise Forth.StackUnderflow
 
-#
-#  Format stack output
-#
-  def format_stack(ev), do: format_stack(Enum.reverse(ev[:stack]), "")
-  defp format_stack([], fev), do: fev
-  defp format_stack([h|t], fev) when t == [], do: fev <> to_string(h)
-  defp format_stack([h|t], fev), do: format_stack(t, fev <> to_string(h) <> " ")
+  defp do_swap(%EV{stack: [h1, h2 | t]} = ev), do: %EV{ev | stack: [h2, h1 | t]}
+  defp do_swap(_), do: raise Forth.StackUnderflow
+
+  defp do_over(%EV{stack: [h1,  h2 | t]} = ev), do: %EV{ev | stack: [h2, h1, h2 | t]}
+  defp do_over(_), do: raise Forth.StackUnderflow
 
 #
 #  Exceptions
 #
   defmodule StackUnderflow do
+    @moduledoc false
     defexception [:message]
     def exception(_), do: %StackUnderflow{message: "stack underflow"}
   end
+
   defmodule InvalidWord do
+    @moduledoc false
     defexception [:message]
     def exception(word), do: %InvalidWord{message: "invalid word: #{inspect word}"}
   end
+
   defmodule UnknownWord do
+    @moduledoc false
     defexception [:message]
     def exception(word), do: %UnknownWord{message: "unknown word: #{inspect word}"}
   end
+
   defmodule DivisionByZero do
+    @moduledoc false
     defexception [:message]
     def exception(_), do: %DivisionByZero{message: "division by zero"}
   end
